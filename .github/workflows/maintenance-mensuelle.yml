@@ -6,11 +6,14 @@ name: Maintenance mensuelle Patoine Studio (reusable)
 #
 # Voir README.md de ce repo pour la procédure d'onboarding d'un nouveau client.
 #
-# Deux étapes utiles :
-#   1. Test du formulaire de contact via API Resend, courriel reconnaissable
-#      envoyé au client (et en copie cachée à la boîte hub Patoine Studio).
-#   2. Snapshot PageSpeed Insights mobile et desktop, commit dans
-#      .maintenance/perf/AAAA-MM-{mobile,desktop}.json pour suivi historique.
+# Étapes du cycle :
+#   1. Test du formulaire de contact via API Resend (mode test ou prod).
+#   2. Snapshot PageSpeed Insights mobile et desktop.
+#   3. Vérification des liens brisés via Lychee.
+#   4. Commit du snapshot perf dans le repo client.
+#   5. Alerte interne à Charles si quelque chose a échoué ou si des liens
+#      sont brisés (triple canal : Issue GitHub, courriel Resend, notif
+#      GitHub native via le failure du workflow).
 #
 # Le job filtre "premier lundi du mois" pour ne déclencher la maintenance qu'à
 # la bonne date quand le caller utilise un cron hebdomadaire. Les déclenchements
@@ -55,7 +58,7 @@ on:
         description: "Clé Resend du domaine d'envoi PS (patoinestudio.ca vérifié)"
         required: true
       PAGESPEED_API_KEY:
-        description: "Clé Google Cloud avec API PageSpeed Insights activée, recommandée pour éviter le rate-limit anonyme"
+        description: "Clé Google Cloud avec API PageSpeed Insights activée"
         required: false
 
 jobs:
@@ -88,9 +91,10 @@ jobs:
     needs: premier-lundi
     if: needs.premier-lundi.outputs.go == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
+      issues: write
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
@@ -104,9 +108,6 @@ jobs:
           MODE_IN: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-
-          # Locale fr non garantie sur les runners Ubuntu, on hardcode la
-          # table de correspondance pour avoir un sujet en français propre.
           mois_num=$(date -u +%m)
           annee=$(date -u +%Y)
           case "${mois_num}" in
@@ -131,16 +132,16 @@ jobs:
             echo "to=${PS_ADMIN_EMAIL}" >> "$GITHUB_OUTPUT"
             echo "bcc=" >> "$GITHUB_OUTPUT"
             echo "subject=[Patoine Studio - Test live] ${CLIENT_DOMAIN} - workflow maintenance mensuelle" >> "$GITHUB_OUTPUT"
-            echo ">> Mode test live, courriel envoyé seulement à ${PS_ADMIN_EMAIL}."
           else
             echo "mode=prod" >> "$GITHUB_OUTPUT"
             echo "to=${CLIENT_EMAIL}" >> "$GITHUB_OUTPUT"
             echo "bcc=${PS_ADMIN_EMAIL}" >> "$GITHUB_OUTPUT"
             echo "subject=[Patoine Studio - Maintenance] ${CLIENT_DOMAIN} - vérification mensuelle du formulaire (${mois_label})" >> "$GITHUB_OUTPUT"
-            echo ">> Mode prod, courriel envoyé à ${CLIENT_EMAIL} avec bcc ${PS_ADMIN_EMAIL}."
           fi
+          echo "mois_label=${mois_label}" >> "$GITHUB_OUTPUT"
 
       - name: Tester l'envoi de courriel via API Resend
+        id: resend
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           MAIL_TO: ${{ steps.mode.outputs.to }}
@@ -158,15 +159,12 @@ jobs:
             exit 1
           fi
 
-          # Corps HTML adapté selon le mode.
           if [ "${MAIL_MODE}" = "test" ]; then
             html="<p>Test live du workflow <code>maintenance-mensuelle.yml</code> du repo <code>${REPO_NAME}</code>.</p><p>Si ce courriel arrive bien dans la boîte hub Patoine Studio, la chaîne API Resend depuis GitHub Actions est validée. On pourra rebasculer le destinataire vers le client avant que le cron prenne le relais le premier lundi du prochain mois.</p><p>Émis automatiquement par GitHub Actions, pas d'action requise.</p>"
           else
             html="<p>Bonjour mon pote,</p><p>Ceci est le test mensuel automatique du formulaire de contact de ton site ${CLIENT_LABEL}. Si tu reçois ce courriel, la chaîne d'envoi fonctionne correctement et tes leads aboutissent bien dans ta boîte.</p><p>Aucune action requise de ta part. Si tu veux quoi que ce soit ajusté, tu m'écris.</p><p>Charles, Patoine Studio</p>"
           fi
 
-          # Construction du payload via jq pour éviter les soucis d'escape avec
-          # les caractères spéciaux dans le sujet ou le HTML.
           payload=$(jq -n \
             --arg from "${PS_FROM}" \
             --arg to "${MAIL_TO}" \
@@ -178,8 +176,6 @@ jobs:
             payload=$(echo "$payload" | jq --arg bcc "${MAIL_BCC}" '. + {bcc: [$bcc]}')
           fi
 
-          echo "Payload Resend prêt, envoi en cours..."
-
           http_status=$(curl -s -o resend-response.json -w "%{http_code}" \
             -X POST "https://api.resend.com/emails" \
             -H "Authorization: Bearer ${RESEND_API_KEY}" \
@@ -187,23 +183,21 @@ jobs:
             -d "${payload}")
 
           echo "HTTP status Resend : ${http_status}"
-          echo "Corps de la réponse :"
           cat resend-response.json
           echo
 
           if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
-            echo "Erreur d'envoi Resend, on échoue le workflow."
+            echo "Erreur d'envoi Resend, le workflow va planter pour déclencher les alertes."
+            echo "error=Resend a renvoyé HTTP ${http_status}" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           message_id=$(jq -r '.id // empty' resend-response.json)
-          if [ -z "${message_id}" ]; then
-            echo "Réponse Resend OK mais id manquant, à investiguer."
-          else
-            echo "Courriel envoyé avec succès, id Resend : ${message_id}"
-          fi
+          echo "Courriel envoyé, id Resend : ${message_id}"
+          echo "message_id=${message_id}" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot PageSpeed Insights (mobile et desktop)
+        id: pagespeed
         env:
           PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
           SITE_URL: ${{ inputs.site_url }}
@@ -212,82 +206,211 @@ jobs:
           mois=$(date -u +%Y-%m)
           mkdir -p .maintenance/perf
 
-          # L'API PageSpeed Insights tolère un quota anonyme limité, partagé
-          # entre tous les utilisateurs anonymes d'une même IP. Les runners
-          # GitHub Actions partagent des IPs avec des milliers d'autres
-          # workflows, donc le rate-limit anonyme (HTTP 429) tombe vite.
-          # Si un secret PAGESPEED_API_KEY est configuré, on l'utilise pour
-          # bénéficier du quota authentifié (25k req/jour par projet GCP).
-          # Fallback gracieux à l'API anonyme sinon, avec retry + backoff.
           if [ -n "${PAGESPEED_API_KEY:-}" ]; then
-            echo "Clé PageSpeed Insights présente, on utilise le quota authentifié."
             key_param="&key=${PAGESPEED_API_KEY}"
           else
-            echo "Pas de clé PageSpeed configurée, fallback API anonyme (rate-limit possible)."
             key_param=""
           fi
 
           first=true
-
           for strategy in mobile desktop; do
             out=".maintenance/perf/${mois}-${strategy}.json"
-
-            if [ "${first}" = "false" ]; then
-              echo "Pause de 5 s entre les deux stratégies..."
-              sleep 5
-            fi
+            if [ "${first}" = "false" ]; then sleep 5; fi
             first=false
 
             url="https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${SITE_URL}&strategy=${strategy}&category=performance${key_param}"
-
-            # Retry avec backoff exponentiel : 3 tentatives, pauses 10 s puis 20 s.
             attempts=3
             for attempt in $(seq 1 ${attempts}); do
-              echo "PageSpeed ${strategy} (tentative ${attempt}/${attempts}) -> ${out}"
               http_status=$(curl -sS -o "${out}" -w "%{http_code}" "${url}" || echo "000")
               if [ "${http_status}" -ge 200 ] && [ "${http_status}" -lt 300 ]; then
-                echo "  HTTP ${http_status}, réponse reçue."
                 break
               fi
-              echo "  HTTP ${http_status}, échec de la tentative ${attempt}."
               if [ "${attempt}" -lt "${attempts}" ]; then
-                pause=$((10 * attempt))
-                echo "  Pause de ${pause} s avant le prochain essai..."
-                sleep ${pause}
+                sleep $((10 * attempt))
               else
-                echo "  Toutes les tentatives ont échoué pour ${strategy}."
-                echo "  Dernière réponse :"
+                echo "Toutes les tentatives ont échoué pour ${strategy}."
                 cat "${out}" || true
                 exit 1
               fi
             done
 
             if ! jq -e '.lighthouseResult.categories.performance.score' "${out}" > /dev/null; then
-              echo "Snapshot ${strategy} invalide (pas de score performance)."
+              echo "Snapshot ${strategy} invalide."
               cat "${out}"
               exit 1
             fi
 
             score=$(jq '.lighthouseResult.categories.performance.score' "${out}")
-            echo "  Score performance ${strategy} : ${score}"
+            echo "Score performance ${strategy} : ${score}"
+            if [ "${strategy}" = "mobile" ]; then
+              echo "score_mobile=${score}" >> "$GITHUB_OUTPUT"
+            else
+              echo "score_desktop=${score}" >> "$GITHUB_OUTPUT"
+            fi
           done
 
+      - name: Vérifier les liens brisés (Lychee)
+        id: lychee_run
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --max-concurrency 4 --timeout 20 --max-redirects 3 --format json --output lychee-report.json ${{ inputs.site_url }}
+          fail: false
+        continue-on-error: true
+
+      - name: Analyser les résultats Lychee
+        id: liens
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ ! -f lychee-report.json ]; then
+            echo "Rapport Lychee absent, on considère 0 lien brisé (mais on signale)."
+            echo "broken_count=0" >> "$GITHUB_OUTPUT"
+            echo "lychee_status=missing_report" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Format JSON lychee récent :
+          # {"total": N, "successful": M, "errors": K, "fail_map": {"input_url": [{"url": "...", "status": {"code": 404, "text": "..."}}]}}
+          total=$(jq -r '.total // 0' lychee-report.json)
+          successful=$(jq -r '.successful // 0' lychee-report.json)
+          errors=$(jq -r '.errors // 0' lychee-report.json)
+          echo "Total: ${total}, Successful: ${successful}, Errors: ${errors}"
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          echo "broken_count=${errors}" >> "$GITHUB_OUTPUT"
+
+          if [ "${errors}" -gt 0 ]; then
+            # Extraire la liste markdown des URLs brisées
+            broken_md=$(jq -r '
+              .fail_map
+              | to_entries
+              | map(
+                  "Source : \(.key)\n" +
+                  (.value | map("  - \(.url) (\(.status.text // .status.code // (.status | tostring)))") | join("\n"))
+                )
+              | join("\n\n")
+            ' lychee-report.json)
+            echo "Liens brisés détectés :"
+            echo "${broken_md}"
+            {
+              echo "broken_list<<LYCHEE_EOF"
+              echo "${broken_md}"
+              echo "LYCHEE_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "Aucun lien brisé."
+            echo "broken_list=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Commit du snapshot perf
+        if: success()
         run: |
           set -euo pipefail
           git config user.name "Maintenance bot Patoine Studio"
           git config user.email "maintenance@patoinestudio.ca"
-          git add .maintenance/
+          git add .maintenance/ 2>/dev/null || true
 
           if git diff --cached --quiet; then
-            echo "Aucun changement à commiter, snapshot identique au précédent."
+            echo "Aucun changement à commiter."
             exit 0
           fi
 
           mois=$(date -u +%Y-%m)
           git commit -m "chore(maintenance): snapshot perf ${mois}"
           git push origin HEAD:${{ github.ref_name }}
-          echo "Snapshot commité et poussé sur ${{ github.ref_name }}."
+
+      - name: Alerte interne, liens brisés détectés
+        if: always() && steps.liens.outputs.broken_count != '' && steps.liens.outputs.broken_count != '0'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          PS_ADMIN_EMAIL: ${{ inputs.ps_admin_email }}
+          PS_FROM: ${{ inputs.ps_from }}
+          CLIENT_DOMAIN: ${{ inputs.client_domain }}
+          CLIENT_LABEL: ${{ inputs.client_label }}
+          BROKEN_COUNT: ${{ steps.liens.outputs.broken_count }}
+          BROKEN_LIST: ${{ steps.liens.outputs.broken_list }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -e
+          echo "Liens brisés détectés (${BROKEN_COUNT}), envoi d'une alerte interne à ${PS_ADMIN_EMAIL}."
+
+          # Convertir la liste markdown en HTML simple
+          html_list=$(echo "${BROKEN_LIST}" | sed 's/^Source : /<strong>Source : /;s/$/<\/strong>/;t' | sed 's/^  - /\&bull; /' | tr '\n' ' ' | sed 's/<\/strong>/<\/strong><br>/g' | sed 's/\&bull;/<br>\&bull;/g')
+
+          html="<p>Alerte interne Patoine Studio.</p><p>Lychee a détecté <strong>${BROKEN_COUNT}</strong> lien(s) brisé(s) sur <strong>${CLIENT_LABEL}</strong> (${CLIENT_DOMAIN}).</p><p>Détail :</p><pre style='background:#f5f5f5;padding:12px;border-radius:6px;font-size:13px;'>$(echo "${BROKEN_LIST}" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g')</pre><p><a href='${RUN_URL}'>Voir le run complet</a></p><p>Cette alerte est séparée du rapport client. Le rapport client mentionne aussi les liens brisés en mode transparent.</p>"
+
+          payload=$(jq -n \
+            --arg from "${PS_FROM}" \
+            --arg to "${PS_ADMIN_EMAIL}" \
+            --arg subject "[Patoine Studio - ALERTE] ${CLIENT_DOMAIN} - ${BROKEN_COUNT} lien(s) brisé(s) détecté(s)" \
+            --arg html "${html}" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -s -X POST "https://api.resend.com/emails" \
+            -H "Authorization: Bearer ${RESEND_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" || echo "Échec d'envoi de l'alerte Resend, à investiguer."
+
+      - name: Alerte interne, échec du workflow
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PS_ADMIN_EMAIL: ${{ inputs.ps_admin_email }}
+          PS_FROM: ${{ inputs.ps_from }}
+          CLIENT_DOMAIN: ${{ inputs.client_domain }}
+          CLIENT_LABEL: ${{ inputs.client_label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e  # Best-effort, on essaie les deux canaux même si l'un plante
+
+          mois=$(date -u +%Y-%m)
+          subject="[Patoine Studio - ALERTE] ${CLIENT_DOMAIN} - échec du workflow maintenance mensuelle"
+          html="<p>Alerte interne Patoine Studio.</p><p>Le workflow de maintenance mensuelle pour <strong>${CLIENT_LABEL}</strong> (${CLIENT_DOMAIN}) a échoué.</p><p><a href='${RUN_URL}'>Voir les détails du run</a></p><p>Le client n'a probablement pas reçu son courriel mensuel. Investiguer et re-déclencher manuellement si besoin via workflow_dispatch.</p>"
+
+          # 1. Tentative courriel Resend (peut planter si Resend est en cause)
+          echo "Tentative d'alerte par courriel Resend..."
+          payload=$(jq -n \
+            --arg from "${PS_FROM}" \
+            --arg to "${PS_ADMIN_EMAIL}" \
+            --arg subject "${subject}" \
+            --arg html "${html}" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          http_status=$(curl -s -o resend-alert.json -w "%{http_code}" \
+            -X POST "https://api.resend.com/emails" \
+            -H "Authorization: Bearer ${RESEND_API_KEY:-}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}")
+          echo "Resend alert HTTP: ${http_status}"
+          cat resend-alert.json 2>/dev/null || true
+          echo
+
+          # 2. Création d'une Issue GitHub (canal toujours fiable, indépendant de Resend)
+          echo "Création d'une Issue GitHub pour tracer l'incident..."
+          issue_body=""
+          issue_body+="Échec automatique détecté lors du run de maintenance mensuelle ${mois}.\n\n"
+          issue_body+="- **Client** : ${CLIENT_LABEL} (${CLIENT_DOMAIN})\n"
+          issue_body+="- **Date** : $(date -u +'%Y-%m-%d %H:%M UTC')\n"
+          issue_body+="- **Run** : ${RUN_URL}\n\n"
+          issue_body+="### Étapes à suivre\n\n"
+          issue_body+="1. Consulter le run pour identifier la cause du blocage.\n"
+          issue_body+="2. Corriger la cause (régénérer une clé, fixer un bug, etc.).\n"
+          issue_body+="3. Re-déclencher le workflow via workflow_dispatch en mode test pour valider.\n"
+          issue_body+="4. Re-déclencher en mode prod si le courriel client n'est pas parti.\n"
+          issue_body+="5. Fermer cette issue.\n\n"
+          issue_body+="### Note\n\n"
+          issue_body+="Cette issue a été créée automatiquement par le workflow réutilisable de maintenance.\n"
+          issue_body+="Un courriel d'alerte Resend a aussi été tenté en parallèle (HTTP ${http_status}).\n"
+          issue_body=$(printf '%b' "${issue_body}")
+
+          # gh CLI est pré-installé sur ubuntu-latest et utilise GITHUB_TOKEN
+          gh issue create \
+            --repo "${REPO}" \
+            --title "Échec workflow maintenance mensuelle - ${mois}" \
+            --body "${issue_body}" \
+            --label "maintenance,alerte" 2>&1 || echo "Création d'issue a aussi échoué, à investiguer côté logs."
 
       - name: Récapitulatif du cycle
         if: always()
@@ -305,12 +428,10 @@ jobs:
             echo "- Bcc : ${{ steps.mode.outputs.bcc }}"
             echo "- Site : ${SITE_URL}"
             echo ""
-            if [ -d .maintenance/perf ]; then
-              echo "Snapshots PageSpeed du mois :"
-              for f in .maintenance/perf/${mois}-*; do
-                if [ -f "$f" ]; then
-                  echo "- \`${f}\`"
-                fi
-              done
-            fi
+            echo "**Résultats**"
+            echo ""
+            echo "- Score perf mobile : ${{ steps.pagespeed.outputs.score_mobile || 'N/A' }}"
+            echo "- Score perf desktop : ${{ steps.pagespeed.outputs.score_desktop || 'N/A' }}"
+            echo "- Liens vérifiés : ${{ steps.liens.outputs.total || 'N/A' }}"
+            echo "- Liens brisés : ${{ steps.liens.outputs.broken_count || 'N/A' }}"
           } >> "$GITHUB_STEP_SUMMARY"
