@@ -219,7 +219,7 @@ jobs:
             fi
           done
 
-      - name: Calculer le delta perf vs mois précédent
+      - name: Composer la section Vitesse (qualification + delta)
         id: delta
         env:
           MOIS_PREV: ${{ steps.mode.outputs.mois_prev }}
@@ -227,42 +227,69 @@ jobs:
           SCORE_DESKTOP: ${{ steps.pagespeed.outputs.score_desktop_pct }}
         run: |
           set -euo pipefail
+
+          # Qualification qualitative de la vitesse actuelle, basée sur la
+          # moyenne des deux scores mobile et desktop. Pas de chiffres bruts
+          # exposés au client, les chiffres seront réservés au rapport
+          # semestriel détaillé qu'on construira plus tard.
+          score_avg=$(( (SCORE_MOBILE + SCORE_DESKTOP) / 2 ))
+          echo "Score moyen mobile+desktop: ${score_avg}/100"
+
+          if [ "${score_avg}" -ge 90 ]; then
+            etat="très rapidement"
+            verdict_court="excellente"
+          elif [ "${score_avg}" -ge 80 ]; then
+            etat="rapidement"
+            verdict_court="solide"
+          elif [ "${score_avg}" -ge 70 ]; then
+            etat="à bonne vitesse"
+            verdict_court="correcte"
+          elif [ "${score_avg}" -ge 50 ]; then
+            etat="à vitesse correcte, avec quelques pistes d''optimisation"
+            verdict_court="à surveiller"
+          else
+            etat="à vitesse qui mérite une attention particulière ce mois-ci"
+            verdict_court="à améliorer"
+          fi
+
+          # Comparaison vs mois précédent, en langage clair également
           prev_mobile_file=".maintenance/perf/${MOIS_PREV}-mobile.json"
           prev_desktop_file=".maintenance/perf/${MOIS_PREV}-desktop.json"
 
-          delta_phrase=""
           if [ -f "${prev_mobile_file}" ] && [ -f "${prev_desktop_file}" ]; then
-            prev_mobile=$(jq '.lighthouseResult.categories.performance.score' "${prev_mobile_file}")
-            prev_desktop=$(jq '.lighthouseResult.categories.performance.score' "${prev_desktop_file}")
-            prev_mobile_pct=$(echo "${prev_mobile} * 100 / 1" | bc -l | awk '{printf "%d", $1+0.5}')
-            prev_desktop_pct=$(echo "${prev_desktop} * 100 / 1" | bc -l | awk '{printf "%d", $1+0.5}')
+            prev_mobile=$(jq ''.lighthouseResult.categories.performance.score'' "${prev_mobile_file}")
+            prev_desktop=$(jq ''.lighthouseResult.categories.performance.score'' "${prev_desktop_file}")
+            prev_mobile_pct=$(echo "${prev_mobile} * 100 / 1" | bc -l | awk ''{printf "%d", $1+0.5}'')
+            prev_desktop_pct=$(echo "${prev_desktop} * 100 / 1" | bc -l | awk ''{printf "%d", $1+0.5}'')
+            prev_avg=$(( (prev_mobile_pct + prev_desktop_pct) / 2 ))
+            delta_avg=$((score_avg - prev_avg))
 
-            # Delta moyen entre les deux stratégies pour qualifier la dérive
-            delta_mobile=$((SCORE_MOBILE - prev_mobile_pct))
-            delta_desktop=$((SCORE_DESKTOP - prev_desktop_pct))
-            delta_avg=$(( (delta_mobile + delta_desktop) / 2 ))
-
-            echo "Delta mobile: ${delta_mobile}, desktop: ${delta_desktop}, moyen: ${delta_avg}"
-
-            # Qualification du delta en langage clair pour le rapport client
             if [ "${delta_avg}" -le -10 ]; then
-              delta_phrase="Ralentissement notable vs le mois dernier, je vais creuser."
+              delta_phrase="Léger ralentissement vs le mois dernier, je vais regarder ce qui a pu changer."
             elif [ "${delta_avg}" -le -3 ]; then
-              delta_phrase="Léger ralentissement vs le mois dernier, sous surveillance."
+              delta_phrase="Légère baisse vs le mois dernier, sous surveillance."
             elif [ "${delta_avg}" -lt 3 ]; then
-              delta_phrase="Stable vs le mois dernier."
+              delta_phrase="La vitesse se maintient au même niveau que le mois dernier."
             elif [ "${delta_avg}" -lt 10 ]; then
               delta_phrase="Légère amélioration vs le mois dernier."
             else
               delta_phrase="Belle amélioration vs le mois dernier."
             fi
-            echo "has_prev=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Pas de snapshot du mois précédent (premier cycle), pas de delta affichable."
-            delta_phrase="Premier cycle de maintenance, pas encore de comparaison historique."
-            echo "has_prev=false" >> "$GITHUB_OUTPUT"
+            delta_phrase="Premier cycle de maintenance pour ton site, la comparaison historique commencera au prochain rapport."
           fi
-          echo "phrase=${delta_phrase}" >> "$GITHUB_OUTPUT"
+
+          # Composition de la section HTML complète, sobre et pédagogique
+          vitesse_html="<p>Ce mois-ci, ton site tourne <strong>${etat}</strong> sur les deux principaux contextes de visite, mobile et ordinateur. ${delta_phrase}</p>"
+          vitesse_html="${vitesse_html}<p>La vitesse d''un site, c''est l''un des leviers les plus directs sur l''expérience de tes visiteurs et sur ton classement dans Google. Un site qui charge en moins de deux secondes garde l''attention, un site qui traîne au-delà de trois secondes commence à perdre du monde.</p>"
+          vitesse_html="${vitesse_html}<p style=''font-size:13px;color:#666;margin-top:12px;''><em>Pour le détail des mesures et les recommandations techniques, je publie un rapport approfondi aux six mois. Tu peux aussi me demander une analyse ponctuelle à tout moment si tu veux creuser.</em></p>"
+
+          {
+            echo "vitesse_html<<VITESSE_HTML_EOF"
+            echo "${vitesse_html}"
+            echo "VITESSE_HTML_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "verdict_court=${verdict_court}" >> "$GITHUB_OUTPUT"
 
       - name: Vérifier les liens brisés (Lychee)
         id: lychee_run
@@ -381,9 +408,7 @@ jobs:
           PS_FROM: ${{ inputs.ps_from }}
           CLIENT_LABEL: ${{ inputs.client_label }}
           MOIS_LABEL: ${{ steps.mode.outputs.mois_label }}
-          SCORE_MOBILE_PCT: ${{ steps.pagespeed.outputs.score_mobile_pct }}
-          SCORE_DESKTOP_PCT: ${{ steps.pagespeed.outputs.score_desktop_pct }}
-          DELTA_PHRASE: ${{ steps.delta.outputs.phrase }}
+          VITESSE_HTML: ${{ steps.delta.outputs.vitesse_html }}
           LIENS_HTML: ${{ steps.liens.outputs.liens_html }}
         run: |
           set -euo pipefail
@@ -405,8 +430,8 @@ jobs:
           # Section 1, Technique
           section_technique="<h3 style='margin-top:24px;color:#1a1a1a;'>Technique</h3><p>Le site est en ligne et surveillé en continu. Le formulaire de contact a été testé automatiquement ce matin et fonctionne. Aucun incident détecté ce mois-ci.</p>"
 
-          # Section 2, Vitesse
-          section_vitesse="<h3 style='margin-top:24px;color:#1a1a1a;'>Vitesse</h3><p>Mesure de la performance du site via Google PageSpeed Insights, sur les deux principaux contextes de visite :</p><ul><li>Mobile : <strong>${SCORE_MOBILE_PCT}/100</strong></li><li>Ordinateur : <strong>${SCORE_DESKTOP_PCT}/100</strong></li></ul><p>${DELTA_PHRASE}</p>"
+          # Section 2, Vitesse (HTML composé par le step delta, qualitatif)
+          section_vitesse="<h3 style='margin-top:24px;color:#1a1a1a;'>Vitesse</h3>${VITESSE_HTML}"
 
           # Section 3, Liens
           section_liens="<h3 style='margin-top:24px;color:#1a1a1a;'>Liens</h3>${LIENS_HTML}"
@@ -571,7 +596,7 @@ jobs:
             echo ""
             echo "- Score perf mobile : ${{ steps.pagespeed.outputs.score_mobile_pct || 'N/A' }}/100"
             echo "- Score perf desktop : ${{ steps.pagespeed.outputs.score_desktop_pct || 'N/A' }}/100"
-            echo "- Delta vs mois précédent : ${{ steps.delta.outputs.phrase || 'N/A' }}"
+            echo "- Verdict vitesse client : ${{ steps.delta.outputs.verdict_court || 'N/A' }}"
             echo "- Liens vérifiés : ${{ steps.liens.outputs.total || 'N/A' }}"
             echo "- Liens brisés : ${{ steps.liens.outputs.broken_count || 'N/A' }}"
             echo "- Vulnérabilités (${{ steps.deps_audit.outputs.tool || 'N/A' }}) : ${{ steps.deps_audit.outputs.critical || 0 }} critical, ${{ steps.deps_audit.outputs.high || 0 }} high, ${{ steps.deps_audit.outputs.moderate || 0 }} moderate, ${{ steps.deps_audit.outputs.low || 0 }} low"
