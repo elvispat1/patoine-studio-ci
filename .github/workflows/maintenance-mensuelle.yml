@@ -301,7 +301,7 @@ jobs:
               fi
 
               # Ligne JSON pour l'index Notion (toutes les pages × stratégies seront poussées)
-              jq -n \
+              jq -nc \
                 --arg page "${page}" \
                 --arg slug "${slug}" \
                 --arg strategy "${strategy}" \
