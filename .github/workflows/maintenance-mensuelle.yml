@@ -565,20 +565,20 @@ jobs:
             exit 0
           fi
 
-          total=$(jq -r ''.total // 0'' lychee-report.json)
-          errors=$(jq -r ''.errors // 0'' lychee-report.json)
+          total=$(jq -r '.total // 0' lychee-report.json)
+          errors=$(jq -r '.errors // 0' lychee-report.json)
           echo "Total: ${total}, Errors: ${errors}"
           echo "total=${total}" >> "$GITHUB_OUTPUT"
           echo "broken_count=${errors}" >> "$GITHUB_OUTPUT"
 
           # Phrase de statut compacte qui s'insère dans la puce Technique > Liens
           if [ "${errors}" -gt 0 ]; then
-            liens_items=$(jq -r ''
+            liens_items=$(jq -r '
               .fail_map
               | to_entries
               | map(.value[] | "<li><code>\(.url)</code> (\(.status.text // .status.code // "erreur"))</li>")
               | join("")
-            '' lychee-report.json)
+            ' lychee-report.json)
             liens_inline="Vérification automatique mensuelle. <strong>${errors} lien(s) brisé(s) détecté(s)</strong> sur les ${total} liens vérifiés :<ul style='margin:6px 0 6px 0;padding-left:20px;'>${liens_items}</ul>Je les corrige dans le prochain cycle."
           else
             liens_inline="Vérification automatique mensuelle. Aucun lien brisé détecté sur les ${total} liens vérifiés ce mois-ci. Utile parce que les liens vers tes réseaux sociaux ou des sites partenaires peuvent disparaître avec le temps."
