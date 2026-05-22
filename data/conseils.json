@@ -1,0 +1,92 @@
+{
+  "version": "1.0",
+  "source": "Notion DB - Conseils maintenance mensuelle Patoine Studio (a304778d7c664f20b546b88d31252d47)",
+  "synced_at": "2026-05-22T18:34:46.056603+00:00",
+  "synced_by": "seed initial manuel",
+  "conseils": [
+    {
+      "numero": 1,
+      "theme": "Analytique et données",
+      "hook": "Un site sans données, c'est conduire les yeux fermés.",
+      "texte": "Janvier est le bon moment pour faire le point sur la mesure de votre site. Si un outil d'analyse est en place (Google Analytics, Cloudflare Web Analytics ou autre), ouvrez-le et regardez trois chiffres de l'année passée : visiteurs uniques, sources d'arrivée, et pages qui retiennent l'attention plus de trente secondes. Si vous n'avez pas d'outil, l'ajout reste simple, mais il oblige à ajuster votre politique de confidentialité (Loi 25). Pas un automatisme, à peser selon vos besoins.",
+      "valeur": "Je m'occupe de l'intégration technique de l'outil et je vous documente ce qu'il recueille comme données. Le texte de votre politique de confidentialité reste de votre côté à rédiger ou à faire valider, je l'intègre au site une fois prêt."
+    },
+    {
+      "numero": 2,
+      "theme": "Résilience et propriété",
+      "hook": "Vous êtes propriétaire de votre nom de domaine. Encore faut-il savoir comment y accéder.",
+      "texte": "Février, période plus calme après les fêtes, le bon moment pour vérifier que vous gardez le contrôle de vos actifs numériques. Trois questions. Avez-vous une liste à jour des comptes critiques (nom de domaine, hébergement, courriel pro, fiche Google) avec l'adresse courriel qui les détient ? Si votre courriel principal tombait demain, recevriez-vous quand même les alertes importantes ? Et savez-vous qui appeler si votre site disparaît cette nuit ?",
+      "valeur": "Le code de tous les sites que je construis est versionné sur GitHub en continu. Si votre site tombe, je peux le remettre en ligne en quelques heures. Côté propriété, votre site et votre nom de domaine restent à 100 % à votre nom : vous gardez le contrôle, peu importe qui vous accompagne."
+    },
+    {
+      "numero": 3,
+      "theme": "Performance des images",
+      "hook": "Une image trop lourde fait perdre un visiteur sur deux avant qu'elle s'affiche.",
+      "texte": "Sur mobile, une page qui prend plus de trois secondes à charger fait fuir la moitié des visiteurs, selon Google. Le coupable habituel : une photo exportée à pleine résolution depuis un appareil photo ou Canva, puis téléversée sans transformation. Mars est le bon mois pour prendre l'habitude. Avant d'ajouter une nouvelle image, passez-la dans Squoosh ou TinyPNG. Vous gagnez 70 à 90 % du poids sans perte visible.",
+      "valeur": "Sur les sites que je construis, les images sont compressées, converties en format AVIF ou WebP et chargées à la demande. Vous n'avez pas à y penser."
+    },
+    {
+      "numero": 4,
+      "theme": "Conformité Loi 25",
+      "hook": "Au Québec, recueillir un courriel via un formulaire vous oblige à publier une politique de confidentialité.",
+      "texte": "Avril est un bon mois pour vérifier la conformité de votre site à la Loi 25. Trois vérifications. Le pied de page de chaque page renvoie-t-il à une politique de confidentialité ? Cette politique nomme-t-elle ce que vous recueillez (nom, courriel), pour quel usage et combien de temps ? Avez-vous identifié votre responsable de la protection des renseignements personnels avec une adresse de contact ? Pour la rédaction du texte légal, consultez un professionnel.",
+      "valeur": "Sur les sites que je construis, l'emplacement et le lien de la politique de confidentialité sont en place dès le départ. Pour le contenu légal lui-même, vous restez en charge : un texte rédigé ou validé par un professionnel est ce qui vous protège vraiment."
+    },
+    {
+      "numero": 5,
+      "theme": "Accessibilité",
+      "hook": "Près de 15 % des Québécois ont un handicap qui rend la navigation web plus difficile.",
+      "texte": "Mai accueille la Journée mondiale de l'accessibilité numérique, bon prétexte pour ouvrir un test rapide. Trois choses à regarder. Le contraste entre texte et fond est-il suffisant pour lire sans plisser les yeux (souvent négligé sur les boutons et le pied de page) ? Chaque image importante a-t-elle un texte alternatif décrit (pour les lecteurs d'écran) ? Peut-on naviguer dans votre site avec la touche Tab sans se perdre ?",
+      "valeur": "Sur les sites que je construis, les contrastes, la structure HTML et la navigation au clavier sont conformes aux standards d'accessibilité dès le départ. Pour les textes alternatifs sur vos propres images, vous pouvez les rédiger vous-même ou me demander de le faire en service ponctuel."
+    },
+    {
+      "numero": 6,
+      "theme": "Expérience mobile",
+      "hook": "En été, votre site se consulte plus souvent au coin d'un parc qu'au coin d'un bureau.",
+      "texte": "L'été ramène vos visiteurs dehors, donc sur leur téléphone. Le trafic mobile dépasse souvent 70 % entre juin et septembre. Deux minutes ce mois-ci : ouvrez votre site sur votre cellulaire, idéalement un appareil plus vieux que le vôtre. Le bouton principal est-il atteignable au pouce, le texte lisible sans zoomer, le formulaire utilisable jusqu'au bout ? Si « non » sur un des trois, à corriger avant les grosses semaines de juillet.",
+      "valeur": "Tous les sites que je construis sont conçus mobile d'abord, et je teste sur plusieurs formats avant la mise en ligne. Si vous repérez un irritant cet été, dites-le-moi : c'est le genre d'ajustement que je prends en gestion mensuelle sans frais supplémentaires."
+    },
+    {
+      "numero": 7,
+      "theme": "Google Business Profile",
+      "hook": "L'été, les gens cherchent « près de moi » deux fois plus souvent qu'en hiver.",
+      "texte": "Juillet est le mois où votre fiche Google Business Profile travaille le plus fort. Quinze minutes ce mois-ci, trois gestes. Confirmez vos heures d'été (incluant la fermeture pour les vacances de la construction). Ajoutez deux ou trois photos récentes, Google favorise les fiches actives. Écrivez à vos trois derniers clients satisfaits pour leur demander un avis, avec le lien direct que Google vous fournit.",
+      "valeur": "Je peux configurer votre fiche Google en forfait fixe. Pour intégrer les meilleurs avis à votre site, je crée plutôt un bloc témoignages designé sur mesure, c'est plus solide visuellement qu'un carrousel branché directement sur Google."
+    },
+    {
+      "numero": 8,
+      "theme": "Partage social et métadonnées",
+      "hook": "Quand votre site se partage, vous ne contrôlez pas toujours ce qui s'affiche.",
+      "texte": "Août est le bon mois pour le vérifier, les partages reprennent après les vacances. Copiez l'URL de votre page d'accueil et collez-la dans LinkedIn Post Inspector (gratuit, pas besoin de compte payant). En cinq secondes, vous voyez l'image, le titre et la description qui s'afficheront quand vos contacts partageront votre site. Si l'aperçu est vide, flou ou hors sujet, c'est que les balises Open Graph manquent ou sont mal configurées. À corriger côté code.",
+      "valeur": "Les balises Open Graph sont configurées par défaut sur tous les sites que je construis, avec une image dédiée pour les pages importantes. Si vous voyez un aperçu qui ne fonctionne pas, signalez-le-moi : c'est inclus dans la gestion mensuelle."
+    },
+    {
+      "numero": 9,
+      "theme": "SEO technique",
+      "hook": "Ce que Google indexe de votre site n'est pas toujours ce que vous croyez.",
+      "texte": "Septembre marque la rentrée des recherches sérieuses, c'est le bon mois pour voir comment Google perçoit votre site. Tapez « site:votredomaine.com » dans Google (avec le deux-points, sans espace). La liste qui apparaît, c'est tout ce que Google a indexé. Vérifiez deux choses : vos pages importantes sont-elles là, et chaque titre affiché donne-t-il envie de cliquer ? Si une page manque ou si les titres sont génériques, il y a du travail côté SEO technique.",
+      "valeur": "Le balisage technique (sitemap, schema, structure HTML) est propre par défaut sur tous les sites que je construis. La rédaction des titres et descriptions SEO par page dépend du forfait : si ce n'est pas inclus, c'est un ajout que je peux faire en service ponctuel."
+    },
+    {
+      "numero": 10,
+      "theme": "Sécurité",
+      "hook": "En 2025, le mot de passe le plus utilisé sur le web reste encore « 123456 ».",
+      "texte": "Octobre est le mois mondial de la cybersécurité, un bon moment pour trois vérifications rapides. Le verrou HTTPS s'affiche-t-il sur toutes les pages (pas seulement l'accueil) ? Votre mot de passe d'administrateur du site fait-il au moins douze caractères, mêlant lettres, chiffres et symboles ? L'authentification à deux facteurs est-elle activée sur votre courriel et votre hébergeur ? Trois oui, vous êtes à jour pour la haute saison qui s'en vient.",
+      "valeur": "Les sites que je construis sont en HTTPS par défaut, avec les en-têtes de sécurité standards configurés et une surveillance mensuelle des dépendances pour repérer les failles connues. Si vous voyez quelque chose d'inhabituel dans vos accès, signalez-le-moi : c'est inclus en gestion mensuelle."
+    },
+    {
+      "numero": 11,
+      "theme": "Disponibilité haute saison",
+      "hook": "Novembre est le pire moment pour découvrir un bug sur votre site.",
+      "texte": "Le trafic peut tripler en novembre avec Black Friday et le magasinage de Noël. Trois gestes ce mois-ci. Envoyez-vous votre propre formulaire de contact pour vérifier que le courriel arrive vraiment (parfois en spam, parfois nulle part). Confirmez vos heures de décembre sur votre site et sur votre fiche Google. Préparez un message d'absence courriel pour les fêtes, à activer le 23 décembre.",
+      "valeur": "Les sites que je construis tiennent les pics de trafic sans broncher (CDN Cloudflare en frontal). Pour le formulaire de contact, je teste la livraison réelle chaque mois dans la maintenance et je vous alerte si quelque chose dérape."
+    },
+    {
+      "numero": 12,
+      "theme": "Formulaire de contact",
+      "hook": "Chaque champ obligatoire de votre formulaire vous coûte des clients.",
+      "texte": "Décembre est un mois où les gens écrivent moins, mais plus sérieusement. Ouvrez votre formulaire et comptez les champs obligatoires. Plus de quatre (nom, courriel, sujet, message) ? Demandez-vous lesquels servent vraiment à répondre. Vérifiez aussi le message qui s'affiche après l'envoi : « Merci, je vous reviens dans 24 heures » convertit mieux qu'un « Formulaire envoyé » sec. Petits ajustements, grosse différence sur le taux de réponse.",
+      "valeur": "Sur les sites que je construis, le formulaire est calibré dès le départ avec le minimum de champs et un message de confirmation qui rassure. Modifier les champs ou le message après livraison sort de la gestion mensuelle, mais dites-le-moi : je vous fais une évaluation rapide."
+    }
+  ]
+}

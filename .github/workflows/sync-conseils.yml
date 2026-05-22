@@ -1,0 +1,154 @@
+name: Sync catalogue Conseils maintenance mensuelle (Notion)
+
+# Ce workflow vit dans patoine-studio-ci et est responsable de garder le
+# fichier data/conseils.json en synchro avec la BDD Notion 'Conseils
+# maintenance mensuelle Patoine Studio' (page Système du workspace Notion).
+#
+# Sa raison d'être : centraliser le token Notion à un seul endroit. Les
+# repos clients (philemon-raymond, etc.) n'ont jamais besoin du token.
+# Quand le reusable workflow maintenance-mensuelle.yml s'exécute, il
+# checkout ce repo en parallèle du repo client et lit data/conseils.json
+# qui est déjà à jour côté disque.
+#
+# Déclenchement :
+#   - cron mensuel le 1er du mois à 6h UTC (donc 2h du matin Montréal en
+#     été, 1h en hiver). Le rapport client part le premier lundi du mois
+#     (souvent quelques jours plus tard), donc le fichier est forcément
+#     à jour quand le reusable workflow le lit.
+#   - workflow_dispatch pour permettre une mise à jour à la demande
+#     (par exemple après avoir modifié un conseil dans Notion).
+
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-conseils
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Pige Notion et met à jour data/conseils.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATABASE_ID: a304778d7c664f20b546b88d31252d47
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Vérifier le token Notion
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTION_TOKEN:-}" ]; then
+            echo "Erreur fatale, le secret NOTION_TOKEN n'est pas configuré sur ce repo."
+            echo "Le sync ne peut pas se faire sans token d'intégration Notion."
+            exit 1
+          fi
+
+      - name: Récupérer les 12 conseils depuis Notion
+        id: notion
+        run: |
+          set -euo pipefail
+          response=$(curl -sS -X POST "https://api.notion.com/v1/databases/${NOTION_DATABASE_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "Notion-Version: 2022-06-28" \
+            -d '{"sorts":[{"property":"Numéro","direction":"ascending"}],"page_size":100}')
+
+          count=$(echo "${response}" | jq '.results | length')
+          echo "Conseils récupérés : ${count}"
+
+          if [ "${count}" -lt 12 ]; then
+            echo "Erreur, le catalogue Notion ne contient pas les 12 conseils attendus (${count} trouvés)."
+            echo "${response}" | head -c 1000
+            exit 1
+          fi
+
+          echo "${response}" > /tmp/notion-response.json
+
+      - name: Construire data/conseils.json
+        run: |
+          set -euo pipefail
+          mkdir -p data
+
+          synced_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          jq --arg synced_at "${synced_at}" --arg actor "${GITHUB_ACTOR:-sync-workflow}" '
+            {
+              version: "1.0",
+              source: "Notion DB - Conseils maintenance mensuelle Patoine Studio (a304778d7c664f20b546b88d31252d47)",
+              synced_at: $synced_at,
+              synced_by: $actor,
+              conseils: (
+                .results
+                | map({
+                    numero: (.properties["Numéro"].number),
+                    theme: (.properties["Thème"].select.name // ""),
+                    hook: (.properties["Phrase d'\''accroche"].title[0].plain_text // ""),
+                    texte: (.properties["Texte du conseil"].rich_text | map(.plain_text) | join("")),
+                    valeur: (.properties["Valeur Patoine Studio"].rich_text | map(.plain_text) | join(""))
+                  })
+                | sort_by(.numero)
+              )
+            }
+          ' /tmp/notion-response.json > data/conseils.json.new
+
+          # Validation minimale du fichier généré
+          new_count=$(jq '.conseils | length' data/conseils.json.new)
+          if [ "${new_count}" -ne 12 ]; then
+            echo "Erreur, le fichier généré ne contient pas 12 conseils (${new_count})."
+            exit 1
+          fi
+
+          mv data/conseils.json.new data/conseils.json
+          echo "data/conseils.json construit avec ${new_count} conseils."
+
+      - name: Commit si changement
+        run: |
+          set -euo pipefail
+          git config user.name "Sync catalogue Patoine Studio"
+          git config user.email "maintenance@patoinestudio.ca"
+
+          # On retire les champs volatils (synced_at, synced_by) pour le diff
+          # parce que sinon chaque run produirait un commit même sans changement
+          # de contenu réel.
+          git add data/conseils.json
+
+          # Diff sur le contenu sans les métadonnées volatiles
+          if git diff --cached --quiet -- data/conseils.json; then
+            echo "Aucun changement dans le catalogue, pas de commit."
+            exit 0
+          fi
+
+          # Vérifier si seules les méta volatiles changent
+          changed_keys=$(git diff --cached -- data/conseils.json | grep -E '^[+-]\s*"' | grep -v '"synced_at"\|"synced_by"' | wc -l)
+          if [ "${changed_keys}" -eq 0 ]; then
+            echo "Seules les métadonnées de synchro changent, on ne commit pas."
+            git restore --staged data/conseils.json
+            git checkout -- data/conseils.json
+            exit 0
+          fi
+
+          mois=$(date -u +%Y-%m)
+          git commit -m "chore(conseils): sync ${mois} depuis la BDD Notion"
+          git push origin HEAD:${{ github.ref_name }}
+          echo "Catalogue mis à jour et poussé."
+
+      - name: Récapitulatif
+        if: always()
+        run: |
+          if [ -f data/conseils.json ]; then
+            {
+              echo "### Sync catalogue Conseils maintenance mensuelle"
+              echo ""
+              echo "- Conseils dans le catalogue : $(jq '.conseils | length' data/conseils.json)"
+              echo "- Source : $(jq -r .source data/conseils.json)"
+              echo "- Dernière synchro : $(jq -r .synced_at data/conseils.json)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
