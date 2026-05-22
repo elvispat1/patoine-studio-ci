@@ -287,14 +287,27 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "verdict_court=${verdict_court}" >> "$GITHUB_OUTPUT"
 
-      - name: Vérifier les liens brisés (Lychee)
+      - name: Vérifier les liens brisés (Lychee, CLI direct)
         id: lychee_run
-        uses: lycheeverse/lychee-action@v2
-        with:
-          args: --no-progress --max-concurrency 4 --timeout 20 --max-redirects 3 --format json ${{ inputs.site_url }}
-          output: lychee-report.json
-          fail: false
         continue-on-error: true
+        env:
+          SITE_URL: ${{ inputs.site_url }}
+        run: |
+          set +e
+          curl -sSL https://github.com/lycheeverse/lychee/releases/latest/download/lychee-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz lychee
+          chmod +x lychee
+          ./lychee --no-progress --max-concurrency 4 --timeout 20 --max-redirects 3 \
+            --format json --output lychee-report.json "${SITE_URL}"
+          status=$?
+          echo "Lychee exit code: ${status}"
+          if [ -f lychee-report.json ]; then
+            echo "Rapport JSON présent."
+            ls -la lychee-report.json
+          else
+            echo "Rapport JSON manquant après exécution."
+          fi
+          exit 0
 
       - name: Analyser les résultats Lychee
         id: liens
