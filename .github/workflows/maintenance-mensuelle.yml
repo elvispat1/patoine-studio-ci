@@ -59,6 +59,21 @@ on:
         required: false
         type: string
         default: "a304778d7c664f20b546b88d31252d47"
+      pages_to_test:
+        description: "JSON array des chemins relatifs à tester avec PageSpeed Insights. Défaut ['/'] (home seulement). Pour multi-pages : '[\"/\", \"/articles\", \"/cours\"]'"
+        required: false
+        type: string
+        default: '["/"]'
+      notion_perf_database_id:
+        description: "Database ID de la BDD Notion '📈 Performance par site web' (page Système). Laisser vide pour désactiver le push Notion."
+        required: false
+        type: string
+        default: "ba305eef315c4ce9801922e30cd336b3"
+      notion_client_page_id:
+        description: "Page ID Notion du client dans la BDD '🗂️ Clients', utilisé pour la relation côté BDD Performance. Si absent, le push Notion est sauté."
+        required: false
+        type: string
+        default: ""
     secrets:
       RESEND_API_KEY:
         description: "Clé Resend du domaine d'envoi PS"
@@ -190,11 +205,12 @@ jobs:
           mois_num_int=$((10#${mois_num}))
           echo "mois_num_int=${mois_num_int}" >> "$GITHUB_OUTPUT"
 
-      - name: Snapshot PageSpeed Insights (mobile et desktop)
+      - name: Snapshot PageSpeed Insights (mobile et desktop, par page)
         id: pagespeed
         env:
           PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
           SITE_URL: ${{ inputs.site_url }}
+          PAGES_TO_TEST: ${{ inputs.pages_to_test }}
         run: |
           set -euo pipefail
           mois=$(date -u +%Y-%m)
@@ -206,44 +222,244 @@ jobs:
             key_param=""
           fi
 
-          first=true
-          for strategy in mobile desktop; do
-            out=".maintenance/perf/${mois}-${strategy}.json"
-            if [ "${first}" = "false" ]; then sleep 5; fi
-            first=false
+          # Index des métriques pour le push Notion subséquent, hors du repo (runner temp)
+          index_file="${RUNNER_TEMP}/notion-perf-index.jsonl"
+          : > "${index_file}"
 
-            url="https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${SITE_URL}&strategy=${strategy}&category=performance${key_param}"
-            for attempt in 1 2 3; do
-              http_status=$(curl -sS -o "${out}" -w "%{http_code}" "${url}" || echo "000")
-              if [ "${http_status}" -ge 200 ] && [ "${http_status}" -lt 300 ]; then
-                break
-              fi
-              if [ "${attempt}" -lt 3 ]; then
-                sleep $((10 * attempt))
-              else
-                echo "PageSpeed ${strategy} a échoué après 3 tentatives."
-                cat "${out}" || true
+          site_url_clean="${SITE_URL%/}"
+
+          # Itère sur chaque page et chaque stratégie
+          first=true
+          score_mobile_first=""
+          score_desktop_first=""
+          score_mobile_pct_first=""
+          score_desktop_pct_first=""
+
+          while IFS= read -r page; do
+            [ -z "${page}" ] && continue
+
+            # Slug pour le nom de fichier snapshot (sans slashes)
+            if [ "${page}" = "/" ]; then
+              slug="home"
+              url_test="${site_url_clean}/"
+            else
+              slug=$(echo "${page#/}" | sed 's|/|-|g')
+              url_test="${site_url_clean}${page}"
+            fi
+
+            echo "::group::PageSpeed pour la page ${page} (slug=${slug})"
+
+            for strategy in mobile desktop; do
+              out=".maintenance/perf/${mois}-${slug}-${strategy}.json"
+              if [ "${first}" = "false" ]; then sleep 5; fi
+              first=false
+
+              url="https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${url_test}&strategy=${strategy}&category=performance${key_param}"
+              for attempt in 1 2 3; do
+                http_status=$(curl -sS -o "${out}" -w "%{http_code}" "${url}" || echo "000")
+                if [ "${http_status}" -ge 200 ] && [ "${http_status}" -lt 300 ]; then
+                  break
+                fi
+                if [ "${attempt}" -lt 3 ]; then
+                  sleep $((10 * attempt))
+                else
+                  echo "PageSpeed ${strategy} pour ${page} a échoué après 3 tentatives."
+                  cat "${out}" || true
+                  exit 1
+                fi
+              done
+
+              if ! jq -e '.lighthouseResult.categories.performance.score' "${out}" > /dev/null; then
+                echo "Snapshot ${strategy} pour ${page} invalide."
+                cat "${out}"
                 exit 1
               fi
+
+              score=$(jq '.lighthouseResult.categories.performance.score' "${out}")
+              score_pct=$(echo "${score} * 100 / 1" | bc -l | awk '{printf "%d", $1+0.5}')
+
+              # Métriques Core Web Vitals (lab Lighthouse + CrUX field data pour INP)
+              lcp=$(jq -r '.lighthouseResult.audits["largest-contentful-paint"].numericValue // empty' "${out}")
+              cls=$(jq -r '.lighthouseResult.audits["cumulative-layout-shift"].numericValue // empty' "${out}")
+              # INP vient du CrUX field data uniquement (pas mesurable en lab). Peut être absent si trafic Chrome insuffisant.
+              inp=$(jq -r '.loadingExperience.metrics.INTERACTION_TO_NEXT_PAINT.percentile // empty' "${out}")
+              if [ -z "${inp}" ]; then
+                inp=$(jq -r '.originLoadingExperience.metrics.INTERACTION_TO_NEXT_PAINT.percentile // empty' "${out}")
+              fi
+
+              echo "  ${strategy} : score=${score_pct}/100 LCP=${lcp:-na}ms CLS=${cls:-na} INP=${inp:-na}ms"
+
+              # Sauvegarder la première page (typiquement '/') pour le step delta qui qualifie la vitesse au client
+              if [ -z "${score_mobile_first}" ] || [ -z "${score_desktop_first}" ]; then
+                if [ "${strategy}" = "mobile" ] && [ -z "${score_mobile_first}" ]; then
+                  score_mobile_first="${score}"
+                  score_mobile_pct_first="${score_pct}"
+                elif [ "${strategy}" = "desktop" ] && [ -z "${score_desktop_first}" ]; then
+                  score_desktop_first="${score}"
+                  score_desktop_pct_first="${score_pct}"
+                fi
+              fi
+
+              # Ligne JSON pour l'index Notion (toutes les pages × stratégies seront poussées)
+              jq -n \
+                --arg page "${page}" \
+                --arg slug "${slug}" \
+                --arg strategy "${strategy}" \
+                --argjson score "${score}" \
+                --arg lcp "${lcp}" \
+                --arg cls "${cls}" \
+                --arg inp "${inp}" \
+                '{
+                  page: $page,
+                  slug: $slug,
+                  strategy: $strategy,
+                  score: $score,
+                  lcp: (if $lcp == "" then null else ($lcp | tonumber) end),
+                  cls: (if $cls == "" then null else ($cls | tonumber) end),
+                  inp: (if $inp == "" then null else ($inp | tonumber) end)
+                }' >> "${index_file}"
             done
 
-            if ! jq -e '.lighthouseResult.categories.performance.score' "${out}" > /dev/null; then
-              echo "Snapshot ${strategy} invalide."
-              cat "${out}"
-              exit 1
+            echo "::endgroup::"
+          done < <(echo "${PAGES_TO_TEST}" | jq -r '.[]')
+
+          # Exposer score_mobile et score_desktop de la première page pour le step delta (verdict client basé sur la home)
+          echo "score_mobile=${score_mobile_first}" >> "$GITHUB_OUTPUT"
+          echo "score_mobile_pct=${score_mobile_pct_first}" >> "$GITHUB_OUTPUT"
+          echo "score_desktop=${score_desktop_first}" >> "$GITHUB_OUTPUT"
+          echo "score_desktop_pct=${score_desktop_pct_first}" >> "$GITHUB_OUTPUT"
+          echo "index_file=${index_file}" >> "$GITHUB_OUTPUT"
+
+          # Bilan synthétique
+          pages_count=$(echo "${PAGES_TO_TEST}" | jq 'length')
+          snapshots_count=$(wc -l < "${index_file}")
+          echo "Bilan PageSpeed : ${pages_count} page(s) × 2 stratégies = ${snapshots_count} snapshot(s)"
+
+      - name: Pousser les métriques de performance dans la BDD Notion
+        id: notion_perf
+        if: always() && steps.pagespeed.outcome == 'success'
+        continue-on-error: true
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ inputs.notion_perf_database_id }}
+          NOTION_CLIENT_PAGE_ID: ${{ inputs.notion_client_page_id }}
+          CLIENT_DOMAIN: ${{ inputs.client_domain }}
+          INDEX_FILE: ${{ steps.pagespeed.outputs.index_file }}
+          MOIS_COURANT: ${{ steps.mode.outputs.mois_courant }}
+          MAIL_MODE: ${{ steps.mode.outputs.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+
+          # Conditions de skip gracieux (alignées avec le pattern Conseils)
+          if [ -z "${NOTION_TOKEN:-}" ]; then
+            echo "NOTION_TOKEN absent, push Notion sauté (fallback gracieux)."
+            exit 0
+          fi
+          if [ -z "${NOTION_DATABASE_ID:-}" ]; then
+            echo "notion_perf_database_id absent, push Notion sauté."
+            exit 0
+          fi
+          if [ -z "${NOTION_CLIENT_PAGE_ID:-}" ]; then
+            echo "notion_client_page_id absent, push Notion sauté (le client n'est pas encore relié à la BDD Clients Notion)."
+            exit 0
+          fi
+          if [ ! -s "${INDEX_FILE}" ]; then
+            echo "Index Notion vide ou absent (${INDEX_FILE}), rien à pousser."
+            exit 0
+          fi
+
+          # Date du premier du mois mesuré
+          date_iso="${MOIS_COURANT}-01"
+
+          # Mode capitalisé pour le Select Notion
+          case "${MAIL_MODE}" in
+            test) mode_label="Test" ;;
+            preview) mode_label="Preview" ;;
+            prod) mode_label="Prod" ;;
+            *) mode_label="Prod" ;;
+          esac
+
+          pushed=0
+          failed=0
+          while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+
+            page=$(echo "${line}" | jq -r '.page')
+            strategy=$(echo "${line}" | jq -r '.strategy')
+            score=$(echo "${line}" | jq -r '.score')
+            lcp=$(echo "${line}" | jq -r '.lcp')
+            cls=$(echo "${line}" | jq -r '.cls')
+            inp=$(echo "${line}" | jq -r '.inp')
+
+            # Capitaliser pour le Select Stratégie
+            if [ "${strategy}" = "mobile" ]; then
+              strategy_label="Mobile"
+            else
+              strategy_label="Desktop"
             fi
 
-            score=$(jq '.lighthouseResult.categories.performance.score' "${out}")
-            score_pct=$(echo "${score} * 100 / 1" | bc -l | awk '{printf "%d", $1+0.5}')
-            echo "Score performance ${strategy} : ${score} (${score_pct}/100)"
-            if [ "${strategy}" = "mobile" ]; then
-              echo "score_mobile=${score}" >> "$GITHUB_OUTPUT"
-              echo "score_mobile_pct=${score_pct}" >> "$GITHUB_OUTPUT"
+            snapshot_title="${MOIS_COURANT} ${CLIENT_DOMAIN} ${page} ${strategy_label}"
+
+            # Construire le bloc properties en gérant les nullables LCP/CLS/INP
+            properties=$(jq -n \
+              --arg title "${snapshot_title}" \
+              --arg date "${date_iso}" \
+              --arg client_id "${NOTION_CLIENT_PAGE_ID}" \
+              --arg domain "${CLIENT_DOMAIN}" \
+              --arg page "${page}" \
+              --arg strategy "${strategy_label}" \
+              --argjson score "${score}" \
+              --arg lcp "${lcp}" \
+              --arg cls "${cls}" \
+              --arg inp "${inp}" \
+              --arg mode "${mode_label}" \
+              --arg run_url "${RUN_URL}" \
+              '{
+                "Snapshot": {"title": [{"text": {"content": $title}}]},
+                "Date": {"date": {"start": $date}},
+                "Client": {"relation": [{"id": $client_id}]},
+                "Domaine": {"rich_text": [{"text": {"content": $domain}}]},
+                "Page": {"rich_text": [{"text": {"content": $page}}]},
+                "Stratégie": {"select": {"name": $strategy}},
+                "Score perf": {"number": $score},
+                "Mode": {"select": {"name": $mode}},
+                "Run URL": {"url": $run_url}
+              }
+              | (if $lcp != "null" and $lcp != "" then . + {"LCP (ms)": {"number": ($lcp | tonumber)}} else . end)
+              | (if $cls != "null" and $cls != "" then . + {"CLS": {"number": ($cls | tonumber)}} else . end)
+              | (if $inp != "null" and $inp != "" then . + {"INP (ms)": {"number": ($inp | tonumber)}} else . end)
+              ')
+
+            payload=$(jq -n \
+              --arg db "${NOTION_DATABASE_ID}" \
+              --argjson props "${properties}" \
+              '{
+                parent: {database_id: $db},
+                properties: $props
+              }')
+
+            http_status=$(curl -sS -o notion-perf-response.json -w "%{http_code}" \
+              -X POST "https://api.notion.com/v1/pages" \
+              -H "Authorization: Bearer ${NOTION_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -H "Notion-Version: 2022-06-28" \
+              -d "${payload}")
+
+            if [ "${http_status}" -ge 200 ] && [ "${http_status}" -lt 300 ]; then
+              pushed=$((pushed + 1))
+              echo "✓ Notion : ${snapshot_title}"
             else
-              echo "score_desktop=${score}" >> "$GITHUB_OUTPUT"
-              echo "score_desktop_pct=${score_pct}" >> "$GITHUB_OUTPUT"
+              failed=$((failed + 1))
+              echo "✗ Notion (HTTP ${http_status}) : ${snapshot_title}"
+              head -c 500 notion-perf-response.json
+              echo
             fi
-          done
+          done < "${INDEX_FILE}"
+
+          echo "Bilan push Notion : ${pushed} réussis, ${failed} échoués."
+          echo "pushed=${pushed}" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
 
       - name: Composer la section Vitesse (qualification)
         id: delta
