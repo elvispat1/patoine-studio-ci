@@ -50,12 +50,20 @@ on:
         required: false
         type: string
         default: "Maintenance Patoine Studio <maintenance@patoinestudio.ca>"
+      notion_conseils_database_id:
+        description: "Database ID de la BDD Notion Conseils maintenance mensuelle PS"
+        required: false
+        type: string
+        default: "a304778d7c664f20b546b88d31252d47"
     secrets:
       RESEND_API_KEY:
         description: "Clé Resend du domaine d'envoi PS"
         required: true
       PAGESPEED_API_KEY:
         description: "Clé Google Cloud avec API PageSpeed Insights activée"
+        required: false
+      NOTION_TOKEN:
+        description: "Token Internal Integration Notion pour lire le catalogue Conseils maintenance mensuelle PS"
         required: false
 
 jobs:
@@ -385,41 +393,42 @@ jobs:
           echo "low=${low}" >> "$GITHUB_OUTPUT"
           echo "total=${total}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout du catalogue Patoine Studio (lecture seule)
-        uses: actions/checkout@v4
-        with:
-          repository: elvispat1/patoine-studio-ci
-          path: _psci
-          ref: main
-
-      - name: Lire le conseil du mois (catalogue local)
+      - name: Récupérer le conseil du mois (Notion API)
         id: conseil
         if: always()
         continue-on-error: true
         env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ inputs.notion_conseils_database_id }}
           MOIS_NUM: ${{ steps.mode.outputs.mois_num_int }}
         run: |
           set +e
-          if [ ! -f _psci/data/conseils.json ]; then
-            echo "Catalogue _psci/data/conseils.json introuvable, fallback placeholder."
+          if [ -z "${NOTION_TOKEN:-}" ]; then
+            echo "NOTION_TOKEN absent, fallback placeholder."
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          conseil=$(jq --argjson num "${MOIS_NUM}" '.conseils[] | select(.numero == $num)' _psci/data/conseils.json)
-          if [ -z "${conseil}" ] || [ "${conseil}" = "null" ]; then
-            echo "Aucun conseil trouvé pour le mois ${MOIS_NUM}."
+          response=$(curl -sS -X POST "https://api.notion.com/v1/databases/${NOTION_DATABASE_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "Notion-Version: 2022-06-28" \
+            -d "{\"filter\": {\"property\": \"Numéro\", \"number\": {\"equals\": ${MOIS_NUM}}}}")
+
+          if ! echo "${response}" | jq -e '.results[0]' > /dev/null 2>&1; then
+            echo "Réponse Notion invalide ou conseil manquant pour le mois ${MOIS_NUM}."
+            echo "${response}" | head -c 500
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          hook=$(echo "${conseil}" | jq -r '.hook // empty')
-          texte=$(echo "${conseil}" | jq -r '.texte // empty')
-          valeur=$(echo "${conseil}" | jq -r '.valeur // empty')
-          theme=$(echo "${conseil}" | jq -r '.theme // empty')
+          hook=$(echo "${response}" | jq -r '.results[0].properties["Phrase d'"'"'accroche"].title[0].plain_text // empty')
+          texte=$(echo "${response}" | jq -r '.results[0].properties["Texte du conseil"].rich_text[0].plain_text // empty')
+          valeur=$(echo "${response}" | jq -r '.results[0].properties["Valeur Patoine Studio"].rich_text[0].plain_text // empty')
+          theme=$(echo "${response}" | jq -r '.results[0].properties["Thème"].select.name // empty')
 
           if [ -z "${hook}" ] || [ -z "${texte}" ] || [ -z "${valeur}" ]; then
-            echo "Champs manquants dans le conseil du mois ${MOIS_NUM}."
+            echo "Champs manquants dans le conseil Notion."
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
