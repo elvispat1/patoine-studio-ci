@@ -27,6 +27,10 @@ on:
         description: "Nom lisible du site, ex. Philémon Productions"
         required: true
         type: string
+      client_first_name:
+        description: "Prénom du contact principal côté client, utilisé dans la salutation personnalisée du rapport, ex. Philippe"
+        required: true
+        type: string
       client_email:
         description: "Adresse courriel du client où arrivent les vrais leads"
         required: true
@@ -473,6 +477,7 @@ jobs:
           MAIL_MODE: ${{ steps.mode.outputs.mode }}
           PS_FROM: ${{ inputs.ps_from }}
           CLIENT_LABEL: ${{ inputs.client_label }}
+          CLIENT_FIRST_NAME: ${{ inputs.client_first_name }}
           MOIS_LABEL: ${{ steps.mode.outputs.mois_label }}
           VITESSE_HTML: ${{ steps.delta.outputs.vitesse_html }}
           LIENS_INLINE: ${{ steps.liens.outputs.liens_inline }}
@@ -494,7 +499,7 @@ jobs:
             intro="<p style='background:#fff3cd;padding:12px;border-radius:6px;color:#664d03;'><strong>Mode test live</strong> : ce courriel a été envoyé uniquement à la boîte hub Patoine Studio pour validation du workflow. Le client ne l'a pas reçu.</p>"
             salutation="<p>Test live du rapport mensuel ${CLIENT_LABEL}.</p>"
           else
-            salutation="<p>Bonjour Philippe,</p><p>Petit mot pour la maintenance de ${MOIS_LABEL}.</p>"
+            salutation="<p>Bonjour ${CLIENT_FIRST_NAME},</p><p>Petit mot pour la maintenance de ${MOIS_LABEL}.</p>"
           fi
 
           # Section 1, Technique (3 puces, surveillance continue mise en valeur)
@@ -582,6 +587,7 @@ jobs:
           PS_FROM: ${{ inputs.ps_from }}
           CLIENT_DOMAIN: ${{ inputs.client_domain }}
           CLIENT_LABEL: ${{ inputs.client_label }}
+          CLIENT_FIRST_NAME: ${{ inputs.client_first_name }}
           TOOL: ${{ steps.deps_audit.outputs.tool }}
           CRITICAL: ${{ steps.deps_audit.outputs.critical }}
           HIGH: ${{ steps.deps_audit.outputs.high }}
@@ -613,6 +619,7 @@ jobs:
           PS_FROM: ${{ inputs.ps_from }}
           CLIENT_DOMAIN: ${{ inputs.client_domain }}
           CLIENT_LABEL: ${{ inputs.client_label }}
+          CLIENT_FIRST_NAME: ${{ inputs.client_first_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPO: ${{ github.repository }}
         run: |
