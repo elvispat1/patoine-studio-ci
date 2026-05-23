@@ -381,7 +381,10 @@ jobs:
           failed=0
 
           # Grouper l'index par page : chaque groupe contient les snapshots mobile + desktop
-          jq -sc 'group_by(.page) | .[]' "${INDEX_FILE}" | while IFS= read -r page_group; do
+          # Note : on utilise process substitution < <(...) au lieu du pipe | while
+          # pour que pushed et failed soient incrémentés dans le shell parent
+          # (sinon le pipe lance le while dans un subshell et les compteurs sont perdus)
+          while IFS= read -r page_group; do
             page=$(echo "${page_group}" | jq -r '.[0].page')
 
             # Extraire les snapshots mobile et desktop pour cette page
@@ -484,7 +487,7 @@ jobs:
               head -c 500 notion-perf-response.json
               echo
             fi
-          done
+          done < <(jq -sc 'group_by(.page) | .[]' "${INDEX_FILE}")
 
           echo "Bilan push Notion : ${pushed} réussis, ${failed} échoués."
           echo "pushed=${pushed}" >> "$GITHUB_OUTPUT"
