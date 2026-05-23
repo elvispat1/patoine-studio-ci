@@ -7,11 +7,11 @@ name: Maintenance mensuelle Patoine Studio (reusable)
 # Voir README.md de ce repo pour la procédure d'onboarding d'un nouveau client.
 #
 # Séquence du cycle :
-#   1. Snapshot PageSpeed Insights mobile et desktop + delta vs mois précédent.
-#   2. Vérification des liens brisés via Lychee.
+#   1. Snapshot PageSpeed Insights mobile et desktop par page (multi-pages OK).
+#   2. Push des métriques de performance dans la BDD Notion 📈 Performance par site web.
 #   3. Audit des dépendances (npm / yarn / pnpm) pour les vulnérabilités.
-#   4. Construction et envoi du rapport client structuré via Resend (4 sections :
-#      Technique, Vitesse, Liens, Conseil du mois). En mode prod, BCC à PS.
+#   4. Construction et envoi du rapport client structuré via Resend (3 sections :
+#      Technique, Vitesse, Conseil du mois). En mode prod, BCC à PS.
 #   5. Commit du snapshot perf dans le repo client.
 #   6. Alerte interne PS si vulnérabilités critical/high détectées.
 #   7. Alerte interne PS si workflow en échec (Issue GitHub + courriel Resend).
@@ -351,9 +351,9 @@ jobs:
         run: |
           set +e
 
-          # Conditions de skip gracieux (alignées avec le pattern Conseils)
+          # Conditions de skip gracieux
           if [ -z "${NOTION_TOKEN:-}" ]; then
-            echo "NOTION_TOKEN absent, push Notion sauté (fallback gracieux)."
+            echo "NOTION_TOKEN absent, push Notion sauté."
             exit 0
           fi
           if [ -z "${NOTION_DATABASE_ID:-}" ]; then
@@ -361,7 +361,7 @@ jobs:
             exit 0
           fi
           if [ -z "${NOTION_CLIENT_PAGE_ID:-}" ]; then
-            echo "notion_client_page_id absent, push Notion sauté (le client n'est pas encore relié à la BDD Clients Notion)."
+            echo "notion_client_page_id absent, push Notion sauté (le client n'est pas relié à la BDD Clients Notion)."
             exit 0
           fi
           if [ ! -s "${INDEX_FILE}" ]; then
@@ -369,10 +369,7 @@ jobs:
             exit 0
           fi
 
-          # Date du premier du mois mesuré
           date_iso="${MOIS_COURANT}-01"
-
-          # Mode capitalisé pour le Select Notion
           case "${MAIL_MODE}" in
             test) mode_label="Test" ;;
             preview) mode_label="Preview" ;;
@@ -382,62 +379,94 @@ jobs:
 
           pushed=0
           failed=0
-          while IFS= read -r line; do
-            [ -z "${line}" ] && continue
 
-            page=$(echo "${line}" | jq -r '.page')
-            strategy=$(echo "${line}" | jq -r '.strategy')
-            score=$(echo "${line}" | jq -r '.score')
-            lcp=$(echo "${line}" | jq -r '.lcp')
-            cls=$(echo "${line}" | jq -r '.cls')
-            inp=$(echo "${line}" | jq -r '.inp')
+          # Grouper l'index par page : chaque groupe contient les snapshots mobile + desktop
+          jq -sc 'group_by(.page) | .[]' "${INDEX_FILE}" | while IFS= read -r page_group; do
+            page=$(echo "${page_group}" | jq -r '.[0].page')
 
-            # Capitaliser pour le Select Stratégie
-            if [ "${strategy}" = "mobile" ]; then
-              strategy_label="Mobile"
-            else
-              strategy_label="Desktop"
-            fi
+            # Extraire les snapshots mobile et desktop pour cette page
+            mobile_json=$(echo "${page_group}" | jq -c '.[] | select(.strategy == "mobile")')
+            desktop_json=$(echo "${page_group}" | jq -c '.[] | select(.strategy == "desktop")')
 
-            snapshot_title="${MOIS_COURANT} ${CLIENT_DOMAIN} ${page} ${strategy_label}"
+            # Fallback si une stratégie manque (cas dégénéré)
+            if [ -z "${mobile_json}" ]; then mobile_json='{"score":null,"lcp":null,"cls":null,"inp":null}'; fi
+            if [ -z "${desktop_json}" ]; then desktop_json='{"score":null,"lcp":null,"cls":null,"inp":null}'; fi
 
-            # Construire le bloc properties en gérant les nullables LCP/CLS/INP
-            properties=$(jq -n \
+            score_mobile=$(echo "${mobile_json}" | jq -r '.score // "null"')
+            score_desktop=$(echo "${desktop_json}" | jq -r '.score // "null"')
+
+            snapshot_title="${MOIS_COURANT} ${CLIENT_DOMAIN} ${page}"
+
+            # Construire les propriétés (colonnes de la BDD)
+            properties=$(jq -nc \
               --arg title "${snapshot_title}" \
               --arg date "${date_iso}" \
               --arg client_id "${NOTION_CLIENT_PAGE_ID}" \
               --arg domain "${CLIENT_DOMAIN}" \
               --arg page "${page}" \
-              --arg strategy "${strategy_label}" \
-              --argjson score "${score}" \
-              --arg lcp "${lcp}" \
-              --arg cls "${cls}" \
-              --arg inp "${inp}" \
               --arg mode "${mode_label}" \
               --arg run_url "${RUN_URL}" \
+              --arg score_m "${score_mobile}" \
+              --arg score_d "${score_desktop}" \
               '{
                 "Snapshot": {"title": [{"text": {"content": $title}}]},
                 "Date": {"date": {"start": $date}},
                 "Client": {"relation": [{"id": $client_id}]},
                 "Domaine": {"rich_text": [{"text": {"content": $domain}}]},
                 "Page": {"rich_text": [{"text": {"content": $page}}]},
-                "Stratégie": {"select": {"name": $strategy}},
-                "Score perf": {"number": $score},
                 "Mode": {"select": {"name": $mode}},
                 "Run URL": {"url": $run_url}
               }
-              | (if $lcp != "null" and $lcp != "" then . + {"LCP (ms)": {"number": ($lcp | tonumber)}} else . end)
-              | (if $cls != "null" and $cls != "" then . + {"CLS": {"number": ($cls | tonumber)}} else . end)
-              | (if $inp != "null" and $inp != "" then . + {"INP (ms)": {"number": ($inp | tonumber)}} else . end)
+              | (if $score_m != "null" and $score_m != "" then . + {"Score perf mobile": {"number": ($score_m | tonumber)}} else . end)
+              | (if $score_d != "null" and $score_d != "" then . + {"Score perf desktop": {"number": ($score_d | tonumber)}} else . end)
               ')
 
-            payload=$(jq -n \
+            # Construire les blocks children (contenu de la page Notion)
+            children=$(jq -nc \
+              --argjson m "${mobile_json}" \
+              --argjson d "${desktop_json}" \
+              --arg run_url "${RUN_URL}" \
+              '
+              def fmt_pct(s): if s == null then "non disponible" else "\((s * 100 + 0.5) | floor) %" end;
+              def fmt_lcp(v): if v == null then "non disponible" else "\(v | floor) ms" end;
+              def fmt_cls(v): if v == null then "non disponible" elif v == 0 then "0 (parfaitement stable)" else "\(v)" end;
+              def fmt_inp(v): if v == null then "non disponible (trafic Chrome insuffisant pour CrUX)" else "\(v | floor) ms" end;
+              def bullet(txt): {object: "block", type: "bulleted_list_item", bulleted_list_item: {rich_text: [{type: "text", text: {content: txt}}]}};
+              def h2(txt): {object: "block", type: "heading_2", heading_2: {rich_text: [{type: "text", text: {content: txt}}]}};
+
+              [
+                h2("📱 Mobile"),
+                bullet("Score performance : " + fmt_pct($m.score)),
+                bullet("LCP (Largest Contentful Paint) : " + fmt_lcp($m.lcp)),
+                bullet("CLS (Cumulative Layout Shift) : " + fmt_cls($m.cls)),
+                bullet("INP (Interaction to Next Paint) : " + fmt_inp($m.inp)),
+
+                h2("🖥️ Desktop"),
+                bullet("Score performance : " + fmt_pct($d.score)),
+                bullet("LCP (Largest Contentful Paint) : " + fmt_lcp($d.lcp)),
+                bullet("CLS (Cumulative Layout Shift) : " + fmt_cls($d.cls)),
+                bullet("INP (Interaction to Next Paint) : " + fmt_inp($d.inp)),
+
+                {object: "block", type: "divider", divider: {}},
+
+                {
+                  object: "block",
+                  type: "paragraph",
+                  paragraph: {
+                    rich_text: [
+                      {type: "text", text: {content: "Source brute : snapshot Git dans .maintenance/perf/ du repo client. "}},
+                      {type: "text", text: {content: "Voir le run GitHub", link: {url: $run_url}}}
+                    ]
+                  }
+                }
+              ]
+              ')
+
+            payload=$(jq -nc \
               --arg db "${NOTION_DATABASE_ID}" \
               --argjson props "${properties}" \
-              '{
-                parent: {database_id: $db},
-                properties: $props
-              }')
+              --argjson children "${children}" \
+              '{parent: {database_id: $db}, properties: $props, children: $children}')
 
             http_status=$(curl -sS -o notion-perf-response.json -w "%{http_code}" \
               -X POST "https://api.notion.com/v1/pages" \
@@ -455,7 +484,7 @@ jobs:
               head -c 500 notion-perf-response.json
               echo
             fi
-          done < "${INDEX_FILE}"
+          done
 
           echo "Bilan push Notion : ${pushed} réussis, ${failed} échoués."
           echo "pushed=${pushed}" >> "$GITHUB_OUTPUT"
@@ -506,99 +535,6 @@ jobs:
             echo "VITESSE_HTML_EOF"
           } >> "$GITHUB_OUTPUT"
           echo "verdict_court=${verdict_court}" >> "$GITHUB_OUTPUT"
-
-      - name: Vérifier les liens brisés (Lychee, CLI direct, multi-pages + sitemap)
-        id: lychee_run
-        continue-on-error: true
-        env:
-          SITE_URL: ${{ inputs.site_url }}
-          PAGES_TO_TEST: ${{ inputs.pages_to_test }}
-        run: |
-          set +e
-          curl -sSL https://github.com/lycheeverse/lychee/releases/latest/download/lychee-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
-          chmod +x lychee
-
-          # Construire la liste des URLs à scanner : chaque page de pages_to_test + le sitemap.xml.
-          # Lychee fait l'union et dédoublonne. Si sitemap absent (404), Lychee la signale
-          # mais continue avec les autres URLs (option C, hybride).
-          site_url_clean="${SITE_URL%/}"
-          urls=()
-          while IFS= read -r page; do
-            [ -z "${page}" ] && continue
-            if [ "${page}" = "/" ]; then
-              urls+=("${site_url_clean}/")
-            else
-              urls+=("${site_url_clean}${page}")
-            fi
-          done < <(echo "${PAGES_TO_TEST}" | jq -r '.[]')
-
-          # Ajout du sitemap.xml comme source supplémentaire d'URLs.
-          # Lychee détecte le format sitemap, extrait les URLs et les visite chacune.
-          urls+=("${site_url_clean}/sitemap.xml")
-
-          echo "Lychee va scanner les URLs suivantes :"
-          printf '  %s\n' "${urls[@]}"
-
-          ./lychee --no-progress --max-concurrency 4 --timeout 20 --max-redirects 3 \
-            --format json --output lychee-report.json "${urls[@]}"
-          status=$?
-          echo "Lychee exit code: ${status}"
-          if [ -f lychee-report.json ]; then
-            echo "Rapport JSON présent."
-            ls -la lychee-report.json
-          else
-            echo "Rapport JSON manquant après exécution."
-          fi
-          exit 0
-
-      - name: Analyser les résultats Lychee
-        id: liens
-        if: always()
-        run: |
-          set -euo pipefail
-
-          if [ ! -f lychee-report.json ]; then
-            echo "broken_count=0" >> "$GITHUB_OUTPUT"
-            echo "total=0" >> "$GITHUB_OUTPUT"
-            echo "liens_inline=Vérification automatique mensuelle, aucun lien brisé détecté." >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          total=$(jq -r '.total // 0' lychee-report.json)
-          errors=$(jq -r '.errors // 0' lychee-report.json)
-          echo "Total: ${total}, Errors: ${errors}"
-          echo "total=${total}" >> "$GITHUB_OUTPUT"
-          echo "broken_count=${errors}" >> "$GITHUB_OUTPUT"
-
-          # Phrase de statut compacte qui s'insère dans la puce Technique > Liens.
-          # Fix défensif 2026-05-22 soir : la structure du JSON Lychee a changé
-          # entre 0.23 et 0.24, .fail_map peut être null. On extrait la liste
-          # détaillée avec un fallback gracieux. Si l'extraction échoue, on
-          # garde juste le compteur de liens brisés sans la liste détaillée.
-          if [ "${errors}" -gt 0 ]; then
-            liens_items=$(jq -r '
-              ((.fail_map // .error_map // {}) // {})
-              | to_entries
-              | map(.value[]? | "<li><code>\(.url // "?")</code> (\(.status.text // .status.code // "erreur"))</li>")
-              | join("")
-            ' lychee-report.json 2>/dev/null || echo "")
-            if [ -n "${liens_items}" ]; then
-              liens_inline="Vérification automatique mensuelle. <strong>${errors} lien(s) brisé(s) détecté(s)</strong> sur les ${total} liens vérifiés :<ul style='margin:6px 0 6px 0;padding-left:20px;'>${liens_items}</ul>Je les corrige dans le prochain cycle."
-            else
-              # Fallback si le format JSON n'expose pas la liste détaillée.
-              # À investiguer en session dédiée pour Lychee v0.24+.
-              liens_inline="Vérification automatique mensuelle. <strong>${errors} lien(s) brisé(s) détecté(s)</strong> sur les ${total} liens vérifiés. Je vais creuser le détail et les corriger dans le prochain cycle."
-            fi
-          else
-            liens_inline="Vérification automatique mensuelle. Aucun lien brisé détecté sur les ${total} liens vérifiés ce mois-ci. Utile parce que les liens vers tes réseaux sociaux ou des sites partenaires peuvent disparaître avec le temps."
-          fi
-
-          {
-            echo "liens_inline<<LIENS_INLINE_EOF"
-            echo "${liens_inline}"
-            echo "LIENS_INLINE_EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Audit des dépendances (npm/yarn/pnpm)
         id: deps_audit
@@ -729,7 +665,6 @@ jobs:
           CLIENT_FIRST_NAME: ${{ inputs.client_first_name }}
           MOIS_LABEL: ${{ steps.mode.outputs.mois_label }}
           VITESSE_HTML: ${{ steps.delta.outputs.vitesse_html }}
-          LIENS_INLINE: ${{ steps.liens.outputs.liens_inline }}
           CONSEIL_AVAILABLE: ${{ steps.conseil.outputs.available }}
           CONSEIL_HOOK: ${{ steps.conseil.outputs.hook }}
           CONSEIL_TEXTE: ${{ steps.conseil.outputs.texte }}
@@ -752,10 +687,9 @@ jobs:
           fi
 
           # Section 1, Technique (3 puces, surveillance continue mise en valeur)
-          section_technique="<h3 style='margin-top:24px;color:#1a1a1a;'>Technique</h3><p>Trois éléments sont vérifiés en continu et chaque mois pour s'assurer que ton site fait son travail sans accroc :</p><ul style='padding-left:20px;'>"
+          section_technique="<h3 style='margin-top:24px;color:#1a1a1a;'>Technique</h3><p>Deux éléments sont vérifiés en continu et chaque mois pour s'assurer que ton site fait son travail sans accroc :</p><ul style='padding-left:20px;'>"
           section_technique="${section_technique}<li style='margin-bottom:10px;'><strong>Disponibilité du site</strong> : surveillance active 24/7 qui confirme que ton site reste accessible aux visiteurs en tout temps. Aucun incident détecté ce mois-ci.</li>"
           section_technique="${section_technique}<li style='margin-bottom:10px;'><strong>Santé du formulaire de contact</strong> : sa configuration en arrière-plan est surveillée en continu pour s'assurer qu'il reste fonctionnel. En complément, j'ai exécuté ce matin un test complet de bout en bout (envoi réel d'un courriel à travers ton site) et tout passe correctement, tes leads aboutiraient bien dans ta boîte.</li>"
-          section_technique="${section_technique}<li style='margin-bottom:10px;'><strong>Liens du site</strong> : ${LIENS_INLINE}</li>"
           section_technique="${section_technique}</ul>"
 
           # Section 2, Vitesse (HTML composé par le step delta, qualitatif)
