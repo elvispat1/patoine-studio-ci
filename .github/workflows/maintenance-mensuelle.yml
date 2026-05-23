@@ -205,6 +205,13 @@ jobs:
           mois_num_int=$((10#${mois_num}))
           echo "mois_num_int=${mois_num_int}" >> "$GITHUB_OUTPUT"
 
+          # Date exacte du run en heure de Montréal (utilisée pour la BDD Notion Performance)
+          # On utilise la TZ Montréal plutôt qu'UTC pour avoir une date qui correspond à
+          # ce que Charles verrait sur son calendrier local. Différence visible surtout pour
+          # les runs déclenchés tard en soirée près de la fin du mois.
+          date_run=$(TZ=America/Montreal date +%Y-%m-%d)
+          echo "date_run=${date_run}" >> "$GITHUB_OUTPUT"
+
       - name: Snapshot PageSpeed Insights (mobile et desktop, par page)
         id: pagespeed
         env:
@@ -346,6 +353,7 @@ jobs:
           CLIENT_DOMAIN: ${{ inputs.client_domain }}
           INDEX_FILE: ${{ steps.pagespeed.outputs.index_file }}
           MOIS_COURANT: ${{ steps.mode.outputs.mois_courant }}
+          DATE_RUN: ${{ steps.mode.outputs.date_run }}
           MAIL_MODE: ${{ steps.mode.outputs.mode }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -369,7 +377,8 @@ jobs:
             exit 0
           fi
 
-          date_iso="${MOIS_COURANT}-01"
+          # Date exacte du run en heure de Montréal (vs premier du mois mesuré avant)
+          date_iso="${DATE_RUN}"
           case "${MAIL_MODE}" in
             test) mode_label="Test" ;;
             preview) mode_label="Preview" ;;
