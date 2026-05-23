@@ -430,10 +430,36 @@ jobs:
               --argjson d "${desktop_json}" \
               --arg run_url "${RUN_URL}" \
               '
-              def fmt_pct(s): if s == null then "non disponible" else "\((s * 100 + 0.5) | floor) %" end;
-              def fmt_lcp(v): if v == null then "non disponible" else "\(v | floor) ms" end;
-              def fmt_cls(v): if v == null then "non disponible" elif v == 0 then "0 (parfaitement stable)" else "\(v)" end;
-              def fmt_inp(v): if v == null then "non disponible (trafic Chrome insuffisant pour CrUX)" else "\(v | floor) ms" end;
+              def label_score(s):
+                if s == null then ""
+                elif s >= 0.9 then " (excellent)"
+                elif s >= 0.7 then " (solide)"
+                elif s >= 0.5 then " (à surveiller)"
+                else " (à améliorer)"
+                end;
+              def label_lcp(v):
+                if v == null then ""
+                elif v <= 2500 then " (excellent)"
+                elif v <= 4000 then " (à surveiller)"
+                else " (à améliorer)"
+                end;
+              def label_cls(v):
+                if v == null then ""
+                elif v == 0 then ""
+                elif v <= 0.1 then " (excellent)"
+                elif v <= 0.25 then " (à surveiller)"
+                else " (à améliorer)"
+                end;
+              def label_inp(v):
+                if v == null then ""
+                elif v <= 200 then " (excellent)"
+                elif v <= 500 then " (à surveiller)"
+                else " (à améliorer)"
+                end;
+              def fmt_pct(s): if s == null then "non disponible" else "\((s * 100 + 0.5) | floor) %\(label_score(s))" end;
+              def fmt_lcp(v): if v == null then "non disponible" else "\(v | floor) ms\(label_lcp(v))" end;
+              def fmt_cls(v): if v == null then "non disponible" elif v == 0 then "0 (parfaitement stable)" else "\(v)\(label_cls(v))" end;
+              def fmt_inp(v): if v == null then "non disponible (trafic Chrome insuffisant pour CrUX)" else "\(v | floor) ms\(label_inp(v))" end;
               def bullet(txt): {object: "block", type: "bulleted_list_item", bulleted_list_item: {rich_text: [{type: "text", text: {content: txt}}]}};
               def h2(txt): {object: "block", type: "heading_2", heading_2: {rich_text: [{type: "text", text: {content: txt}}]}};
 
